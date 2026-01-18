@@ -1683,6 +1683,8 @@ try:
     _ed_ind = pd.to_datetime(end_date)
     _range_days = max(1, int((_ed_ind - _sd_ind).days) + 1)
     _use_intraday = _range_days < 31
+    _all_tse = bool(portfolio_tickers) and all(str(t).endswith(".T") for t in portfolio_tickers)
+    _all_us = bool(portfolio_tickers) and all(not str(t).endswith(".T") for t in portfolio_tickers)
 
     def _to_tz(idx: pd.DatetimeIndex, tz: str) -> pd.DatetimeIndex:
         """Best-effort tz conversion for market-hours filtering.
@@ -1835,7 +1837,21 @@ try:
             margin=dict(l=10, r=10, t=50, b=50),
             title_font=dict(color="rgba(49,51,63,1)")
         )
-        fig_prices.update_xaxes(
+        _x_rangebreaks = None
+        if _use_intraday and (_all_tse or _all_us):
+            if _all_tse:
+                _x_rangebreaks = [
+                    dict(bounds=["sat", "mon"]),
+                    dict(bounds=[15.5, 9.0], pattern="hour"),
+                    dict(bounds=[11.5, 12.5], pattern="hour"),
+                ]
+            else:
+                _x_rangebreaks = [
+                    dict(bounds=["sat", "mon"]),
+                    dict(bounds=[16.0, 9.5], pattern="hour"),
+                ]
+
+        _xaxis_kwargs = dict(
             automargin=True,
             showspikes=True,
             spikemode="across",
@@ -1843,6 +1859,10 @@ try:
             spikedash="dot",
             spikethickness=1,
         )
+        if _x_rangebreaks is not None:
+            _xaxis_kwargs["rangebreaks"] = _x_rangebreaks
+            _xaxis_kwargs["range"] = [pd.Timestamp(_norm.index.min()), pd.Timestamp(_norm.index.max())]
+        fig_prices.update_xaxes(**_xaxis_kwargs)
         fig_prices.update_yaxes(title_text="Normalized Price (Start=1.0)", tickformat=".2f", automargin=True)
 
         if _log_price:
