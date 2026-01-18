@@ -82,6 +82,11 @@ JavaScript / Streamlit Component は特に壊れやすいため、慎重に扱�
 - project structure
 - dependencies
 
+重要な前提：
+- `app/` ディレクトリが現行バージョンである。
+- `app_v5185_full.zip` は参照用で、編集対象ではない。
+- 以後の変更は `app/` 以下のみ行う。
+
 ## Git 運用
 自動でコミットしない。
 
