@@ -1,33 +1,72 @@
 # Project Rules for Codex (PFChecker)
 
+## Scope / Priorities
+- Primary goal: implement requested changes with minimal risk.
+- Preserve existing behavior unless the change explicitly requires otherwise.
+- Keep diffs small and reviewable.
+
 ## Language / Runtime
 - Python 3.x
-- Virtual environment may be used (.venv)
+- Do not assume dependency managers (poetry/pipenv) unless they exist in the repo.
 
 ## How to Run
-- Main entry point: clarify before running
-- Do NOT invent execution commands
-- Ask if the run command is unclear
+- Do NOT invent run commands.
+- Before running anything, locate and propose the correct command(s) based on the repo files
+  (e.g., README, Makefile, pyproject.toml, requirements.txt, entry scripts).
+- If the correct run command is unclear, ask for it.
 
-## Testing
-- Prefer pytest if tests exist
-- If no tests exist, do NOT invent fake tests
-- When adding features, add minimal tests only if reasonable
+## Testing (No existing tests)
+- Assume there are no tests unless a tests/ directory or pytest config exists.
+- Do NOT introduce a test framework or CI by default.
+- Only add tests if the user explicitly requests it.
+- If adding tests is requested, keep it minimal (smoke test level) and follow existing tooling.
 
-## Code Style
-- Follow existing code style
-- Do NOT reformat unrelated code
-- Avoid large refactors unless explicitly requested
+## Code Style / Refactoring
+- Follow existing style.
+- Do NOT reformat or refactor unrelated code.
+- Avoid large structural changes unless explicitly requested.
 
-## Git Rules
-- Modify only files relevant to the task
-- Do NOT touch .gitignore unless requested
-- Do NOT commit automatically
+## Files / Safety
+- Modify only files necessary for the task.
+- Do NOT delete files unless explicitly instructed.
+- Do NOT change .gitignore, project structure, or dependencies unless requested.
 
-## Safety
-- Do NOT delete files unless explicitly instructed
-- Preserve existing behavior unless change is requested
+## Git Workflow
+- Do NOT commit automatically.
+- Summarize changed files and the rationale at the end of the work.
+# Project Rules for Codex (PFChecker)
 
-## Communication
-- Explain what files were changed and why
-- If assumptions are required, state them explicitly
+## Scope / Priorities
+- Primary goal: implement requested changes with minimal risk.
+- Preserve existing behavior unless the change explicitly requires otherwise.
+- Keep diffs small and reviewable.
+
+## Language / Runtime
+- Python 3.x
+- Do not assume dependency managers (poetry/pipenv) unless they exist in the repo.
+
+## How to Run
+- Do NOT invent run commands.
+- Before running anything, locate and propose the correct command(s) based on the repo files
+  (e.g., README, Makefile, pyproject.toml, requirements.txt, entry scripts).
+- If the correct run command is unclear, ask for it.
+
+## Testing (No existing tests)
+- Assume there are no tests unless a tests/ directory or pytest config exists.
+- Do NOT introduce a test framework or CI by default.
+- Only add tests if the user explicitly requests it.
+- If adding tests is requested, keep it minimal (smoke test level) and follow existing tooling.
+
+## Code Style / Refactoring
+- Follow existing style.
+- Do NOT reformat or refactor unrelated code.
+- Avoid large structural changes unless explicitly requested.
+
+## Files / Safety
+- Modify only files necessary for the task.
+- Do NOT delete files unless explicitly instructed.
+- Do NOT change .gitignore, project structure, or dependencies unless requested.
+
+## Git Workflow
+- Do NOT commit automatically.
+- Summarize changed files and the rationale at the end of the work.
