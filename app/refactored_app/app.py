@@ -66,7 +66,7 @@ _PLOTLY_HOVER_SYNC_INDEX = _PLOTLY_HOVER_SYNC_DIR / "index.html"
 
 
 @st.cache_data(show_spinner=False)
-def _load_plotly_hover_sync_index_html() -> str:
+def _load_plotly_hover_sync_index_html(mtime: float) -> str:
     """Load the bundled frontend HTML (includes Plotly bundle inline)."""
     try:
         return _PLOTLY_HOVER_SYNC_INDEX.read_text(encoding="utf-8")
@@ -78,7 +78,11 @@ def _render_plotly_hover_sync_front(fig_dict: dict, table_payload: dict | None, 
     """Render Plotly + synced table purely in the frontend (no Streamlit component)."""
     import json as _json
 
-    base = _load_plotly_hover_sync_index_html()
+    try:
+        _mtime = _PLOTLY_HOVER_SYNC_INDEX.stat().st_mtime
+    except Exception:
+        _mtime = 0.0
+    base = _load_plotly_hover_sync_index_html(_mtime)
     if not base:
         st.error("plotly_hover_sync frontend assets are missing (index.html not found).")
         return
@@ -469,6 +473,12 @@ def _apply_pending_date_range() -> None:
         st.session_state["start_date"] = str(start)
     if end:
         st.session_state["end_date"] = str(end)
+    # Reset quick-range selector so the same option can be chosen again.
+    try:
+        st.session_state["quick_range_row1"] = "（期間）"
+        st.session_state["quick_range_row2"] = "（期間）"
+    except Exception:
+        pass
 
 
 _apply_pending_date_range()
@@ -1659,15 +1669,42 @@ if not readonly:
     with st.expander("表示オプション", expanded=False):
         _log_price = st.checkbox("対数スケール（Y軸）", value=False, key="opt_individual_logy")
 
-    _cols = st.columns(len(_quick_defs))
-    for i, (lbl, sdt, edt) in enumerate(_quick_defs):
-        with _cols[i]:
-            if st.button(lbl, use_container_width=True, key=f"quick_{lbl}"):
-                st.session_state["_quick_range_pending"] = {
-                    "start": pd.to_datetime(sdt).strftime("%Y-%m-%d"),
-                    "end": pd.to_datetime(edt).strftime("%Y-%m-%d"),
-                }
-                st.rerun()
+    # Mobile: Streamlit columns collapse into 1-column (stacked) layout.
+    # Use horizontal radios (2 rows) to keep the quick-range controls compact.
+    _placeholder = "（期間）"
+    _qmap = {str(lbl): (sdt, edt) for (lbl, sdt, edt) in _quick_defs}
+    _row1 = [str(lbl) for (lbl, _, _) in _quick_defs[:5]]
+    _row2 = [str(lbl) for (lbl, _, _) in _quick_defs[5:]]
+
+    def _quick_radio(options: list[str], key: str) -> str:
+        try:
+            return st.radio(
+                "期間",
+                options=[_placeholder] + list(options),
+                horizontal=True,
+                label_visibility="collapsed",
+                index=0,
+                key=key,
+            )
+        except TypeError:
+            # Fallback for older Streamlit versions
+            return st.selectbox(
+                "期間",
+                options=[_placeholder] + list(options),
+                index=0,
+                key=key,
+            )
+
+    _sel1 = _quick_radio(_row1, key="quick_range_row1")
+    _sel2 = _quick_radio(_row2, key="quick_range_row2")
+    _sel = _sel1 if _sel1 != _placeholder else _sel2
+    if _sel and _sel != _placeholder and _sel in _qmap:
+        sdt, edt = _qmap[_sel]
+        st.session_state["_quick_range_pending"] = {
+            "start": pd.to_datetime(sdt).strftime("%Y-%m-%d"),
+            "end": pd.to_datetime(edt).strftime("%Y-%m-%d"),
+        }
+        st.rerun()
 else:
     # readonly: keep the existing expander UX
     with st.expander("表示オプション", expanded=False):
@@ -1865,11 +1902,12 @@ try:
 
         fig_prices.update_layout(
             title="Individual Prices (JPY) Normalized (Start=1.0)",
-            hovermode="x unified",
+            hovermode="x",
             autosize=True,
             margin=dict(l=10, r=10, t=50, b=50),
             title_font=dict(color="rgba(49,51,63,1)")
         )
+        fig_prices.update_traces(hoverinfo="skip", hovertemplate=None)
         _x_rangebreaks = None
         if _use_intraday and (_all_tse or _all_us):
             if _all_tse:

@@ -70,6 +70,7 @@
       We do not mask the chart area, because it can hide titles and axis labels.
       Hover labels are minimized via Plotly layout.hoverlabel in renderFigure().
     */
+    .hoverlayer .hovertext { display: none !important; }
 
 </style>
 </head>
@@ -316,12 +317,25 @@
 const config = { displayModeBar: false, responsive: true };
 
         Plotly.react(chartDiv, fig.data, fig.layout, config).then(() => {
+          suppressHoverLabels();
           attachHoverHandler();
           setFrameHeight();
         });
       } catch (e) {
         setFrameHeight();
       }
+    }
+
+    function suppressHoverLabels() {
+      try {
+        const hoverLayer = chartDiv.querySelector('.hoverlayer');
+        if (!hoverLayer) return;
+        const labels = hoverLayer.querySelectorAll('.hovertext, .hovertext *, .hoverlabel, .hoverbg');
+        labels.forEach((el) => {
+          el.style.display = 'none';
+          el.style.opacity = '0';
+        });
+      } catch (e) {}
     }
 
     let _hoverAttached = false;
@@ -339,6 +353,7 @@ const config = { displayModeBar: false, responsive: true };
           else ms = Date.parse(x);
           const idx = nearestIndex(ms);
           if (idx >= 0) scheduleTableUpdate(idx);
+          suppressHoverLabels();
         });
         // MOBILE_TOUCH_V1
         // Mobile/touch: tap updates table (hover often doesn't fire on touch)
@@ -352,6 +367,7 @@ const config = { displayModeBar: false, responsive: true };
             else ms = Date.parse(x);
             const idx = nearestIndex(ms);
             if (idx >= 0) scheduleTableUpdate(idx);
+            suppressHoverLabels();
           } catch (e) {}
         });
 
