@@ -1544,9 +1544,10 @@ except Exception:
 
 fetch_start = fetch_start_dt.strftime("%Y-%m-%d")
 
+fetch_end = (pd.to_datetime(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 with st.spinner("データ取得中..."):
-    prices_local = fetch_adjclose(tickers, fetch_start, end_date)
-    usdjpy = fetch_usdjpy(fetch_start, end_date)
+    prices_local = fetch_adjclose(tickers, fetch_start, fetch_end)
+    usdjpy = fetch_usdjpy(fetch_start, fetch_end)
     prices_jpy_all = to_jpy(prices_local, meta_df, usdjpy)
 
 # Cache JPY prices for BL representative market mapping (used inside optimize_weights)
@@ -1633,16 +1634,25 @@ if not readonly:
         return d
 
     _last_td = _last_trading_day_guess(portfolio_tickers, _today, _now)
+
+    def _shift_trading_days(d: pd.Timestamp, n: int) -> pd.Timestamp:
+        d2 = pd.Timestamp(d)
+        for _ in range(max(0, int(n))):
+            d2 = d2 - pd.Timedelta(days=1)
+            while d2.weekday() >= 5:
+                d2 = d2 - pd.Timedelta(days=1)
+        return d2
+
     _quick_defs = [
-        ("1日", _last_td),
-        ("5日", _today - pd.Timedelta(days=5)),
-        ("1か月", _today - pd.DateOffset(months=1)),
-        ("6か月", _today - pd.DateOffset(months=6)),
-        ("年初来", pd.Timestamp(year=_today.year, month=1, day=1)),
-        ("1年", _today - pd.DateOffset(years=1)),
-        ("3年", _today - pd.DateOffset(years=3)),
-        ("5年", _today - pd.DateOffset(years=5)),
-        ("最大", pd.Timestamp("2000-01-01")),
+        ("1日", _last_td, _last_td),
+        ("5日", _shift_trading_days(_last_td, 4), _last_td),
+        ("1か月", _today - pd.DateOffset(months=1), _today),
+        ("6か月", _today - pd.DateOffset(months=6), _today),
+        ("年初来", pd.Timestamp(year=_today.year, month=1, day=1), _today),
+        ("1年", _today - pd.DateOffset(years=1), _today),
+        ("3年", _today - pd.DateOffset(years=3), _today),
+        ("5年", _today - pd.DateOffset(years=5), _today),
+        ("最大", pd.Timestamp("2000-01-01"), _today),
     ]
 
     # Swap order per request: display options first, quick buttons below.
@@ -1650,12 +1660,12 @@ if not readonly:
         _log_price = st.checkbox("対数スケール（Y軸）", value=False, key="opt_individual_logy")
 
     _cols = st.columns(len(_quick_defs))
-    for i, (lbl, sdt) in enumerate(_quick_defs):
+    for i, (lbl, sdt, edt) in enumerate(_quick_defs):
         with _cols[i]:
             if st.button(lbl, use_container_width=True, key=f"quick_{lbl}"):
                 st.session_state["_quick_range_pending"] = {
                     "start": pd.to_datetime(sdt).strftime("%Y-%m-%d"),
-                    "end": _today.strftime("%Y-%m-%d"),
+                    "end": pd.to_datetime(edt).strftime("%Y-%m-%d"),
                 }
                 st.rerun()
 else:
@@ -1738,14 +1748,37 @@ try:
         # Apply market-hours filtering per ticker. If filtering removes too much, keep unfiltered.
         _series_norm: dict[str, pd.Series] = {}
         _union_idx = None
+        def _normalize_intraday_index(idx: pd.DatetimeIndex, tz_name: str) -> pd.DatetimeIndex:
+            """Convert tz-naive intraday index to local market time when it looks like UTC."""
+            if getattr(idx, "tz", None) is None:
+                hrs = pd.Series(idx).dt.hour
+                if tz_name == "Asia/Tokyo":
+                    utc_like = (hrs <= 6).mean() > 0.6
+                elif tz_name == "US/Eastern":
+                    utc_like = ((hrs >= 12) & (hrs <= 23)).mean() > 0.6
+                else:
+                    utc_like = (hrs <= 6).mean() > 0.6
+                if utc_like:
+                    try:
+                        return idx.tz_localize("UTC").tz_convert(tz_name).tz_localize(None)
+                    except Exception:
+                        return idx
+                return idx
+            try:
+                return idx.tz_convert(tz_name).tz_localize(None)
+            except Exception:
+                return idx
+
         for _t in list(_px_jpy_i.columns):
             _s0 = _px_jpy_i[_t].dropna()
             if _s0.empty:
                 continue
 
             if str(_t).endswith(".T"):
+                _s0.index = _normalize_intraday_index(_s0.index, "Asia/Tokyo")
                 _mask = _tse_hours_mask(_s0.index)
             else:
+                _s0.index = _normalize_intraday_index(_s0.index, "US/Eastern")
                 _mask = _us_hours_mask(_s0.index)
 
             _s1 = _s0.loc[_mask] if _mask is not None else _s0
