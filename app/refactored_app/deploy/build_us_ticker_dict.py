@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build a local US ticker dictionary (NYSE + NASDAQ) for stable offline search.
+"""Build a local US ticker dictionary (NASDAQ + major U.S. exchanges) for stable offline search.
 
 Data source: NASDAQ Trader Symbol Directory.
 
 - NASDAQ listed: nasdaqlisted.txt
-- Other listed (incl. NYSE): otherlisted.txt
+- Other listed (incl. NYSE/NYSEARCA/NYSEAMERICAN/BATS/IEXG): otherlisted.txt
 
-We intentionally filter to:
+We include:
   - NASDAQ (from nasdaqlisted)
-  - NYSE (exchange code 'N' in otherlisted)
+  - ALL "otherlisted" rows except test issues
+    (This is required to cover ETFs like VOO/VTI/EDV on NYSEARCA.)
 
 Additionally we append common crypto symbols for Yahoo Finance (yfinance):
   - BTC-USD (Bitcoin)
@@ -60,6 +61,14 @@ def build(out_path: Path) -> None:
     other_text = _download_text(OTHERLISTED_URL)
 
     rows: dict[str, dict] = {}
+    exch_map = {
+        # Ref: NASDAQ Trader Symbol Directory definitions
+        "N": "NYSE",
+        "A": "NYSEAMERICAN",
+        "P": "NYSEARCA",
+        "Z": "BATS",
+        "V": "IEXG",
+    }
 
     # NASDAQ-listed
     for r in _parse_pipe_table(nasdaq_text):
@@ -77,13 +86,11 @@ def build(out_path: Path) -> None:
             "source": "nasdaqlisted",
         }
 
-    # NYSE-listed only (otherlisted Exchange code 'N')
+    # Other listed (NYSE/NYSEARCA/NYSEAMERICAN/etc.)
     for r in _parse_pipe_table(other_text):
         if (r.get("Test Issue") or "").strip().upper() == "Y":
             continue
         exch = (r.get("Exchange") or "").strip().upper()
-        if exch != "N":
-            continue
         sym = (r.get("ACT Symbol") or r.get("Symbol") or "").strip()
         if not sym:
             continue
@@ -91,7 +98,7 @@ def build(out_path: Path) -> None:
         rows[sym] = {
             "symbol": sym,
             "name": name,
-            "exchange": "NYSE",
+            "exchange": exch_map.get(exch, exch),
             "asset_class": "equity",
             "source": "otherlisted",
         }
