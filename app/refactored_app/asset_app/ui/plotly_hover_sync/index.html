@@ -75,10 +75,12 @@
 </style>
 </head>
 <body>
+  <div id="quickbar"></div>
   <div id="chart"></div>
   <div id="table"></div>
   <script src="https://cdn.plot.ly/plotly-2.4.1.min.js"></script>
   <script>
+    const quickDiv = document.getElementById('quickbar');
     const chartDiv = document.getElementById('chart');
     const tableDiv = document.getElementById('table');
     let lastFigKey = null;
@@ -88,6 +90,7 @@
     let names = {};
     let colors = {};
     let series = {};
+    let datasets = { daily: null, intraday: null };
     let lastIndex = -1;
     let rafPending = false;
 
@@ -229,12 +232,302 @@
       });
     }
 
+    function buildQuickBar() {
+      try {
+        if (!quickDiv) return;
+        quickDiv.innerHTML = '';
+        quickDiv.style.display = 'flex';
+        quickDiv.style.flexWrap = 'wrap';
+        quickDiv.style.gap = '6px';
+        quickDiv.style.padding = '8px 10px 2px 10px';
+        quickDiv.style.boxSizing = 'border-box';
+
+        const labels = ['1日', '5日', '1か月', '6か月', '年初来', '1年', '3年', '5年', '最大'];
+        for (const lbl of labels) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = lbl;
+          b.style.fontSize = '12px';
+          b.style.padding = '6px 10px';
+          b.style.borderRadius = '999px';
+          b.style.border = '1px solid rgba(49,51,63,0.25)';
+          b.style.background = 'rgba(255,255,255,0.9)';
+          b.style.color = 'rgba(49,51,63,0.95)';
+          b.style.whiteSpace = 'nowrap';
+          b.style.cursor = 'pointer';
+          b.addEventListener('click', () => applyQuickRange(lbl));
+          quickDiv.appendChild(b);
+        }
+
+        const msg = document.createElement('div');
+        msg.id = 'quickmsg';
+        msg.style.marginLeft = 'auto';
+        msg.style.alignSelf = 'center';
+        msg.style.fontSize = '11px';
+        msg.style.color = 'rgba(49,51,63,0.55)';
+        msg.style.padding = '0 0 4px 0';
+        msg.style.whiteSpace = 'nowrap';
+        quickDiv.appendChild(msg);
+      } catch (e) {}
+    }
+
+    function _setQuickMsg(text) {
+      try {
+        const el = quickDiv && quickDiv.querySelector ? quickDiv.querySelector('#quickmsg') : null;
+        if (el) el.textContent = text || '';
+      } catch (e) {}
+    }
+
+    function _datePart(s) {
+      return String(s || '').slice(0, 10);
+    }
+
+    function _parseYmdUtc(ymd) {
+      const p = String(ymd || '').split('-').map((x) => parseInt(x, 10));
+      if (!p || p.length !== 3 || !p[0] || !p[1] || !p[2]) return null;
+      return new Date(Date.UTC(p[0], p[1] - 1, p[2]));
+    }
+
+    function _addMonthsUtc(dt, months) {
+      const y = dt.getUTCFullYear();
+      const m = dt.getUTCMonth();
+      const d = dt.getUTCDate();
+      const base = new Date(Date.UTC(y, m + months, 1));
+      const last = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0)).getUTCDate();
+      return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), Math.min(d, last)));
+    }
+
+    function _addYearsUtc(dt, years) {
+      return _addMonthsUtc(dt, years * 12);
+    }
+
+    function _buildDateInfo(xs) {
+      try {
+        if (!xs || xs.length < 2) return null;
+        const uniqueDates = [];
+        const firstIndex = {};
+        let prev = null;
+        for (let i = 0; i < xs.length; i++) {
+          const d = _datePart(xs[i]);
+          if (!d) continue;
+          if (d !== prev) {
+            uniqueDates.push(d);
+            firstIndex[d] = i;
+            prev = d;
+          }
+        }
+        if (uniqueDates.length === 0) return null;
+        return { xs, uniqueDates, firstIndex };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function _firstIndexFromThreshold(xs, thresholdUtc) {
+      const info = _buildDateInfo(xs);
+      if (!info) return 0;
+      for (const d of info.uniqueDates) {
+        const du = _parseYmdUtc(d);
+        if (du && du.getTime() >= thresholdUtc.getTime()) {
+          return info.firstIndex[d] || 0;
+        }
+      }
+      return 0;
+    }
+
+    function _activateData(xsView, seriesView) {
+      try {
+        tableData = tableData || {};
+        tableData.x = xsView;
+        series = seriesView || {};
+        lastIndex = -1;
+        try {
+          xMs = xsView.map((s) => Date.parse(s));
+        } catch (e) {
+          xMs = null;
+        }
+        buildTableSkeleton();
+        if (xMs && xMs.length > 0) scheduleTableUpdate(xMs.length - 1);
+      } catch (e) {}
+    }
+
+    function _applyRangebreaks(isIntraday) {
+      try {
+        const allTse = order && order.length > 0 && order.every((t) => String(t).endsWith('.T'));
+        const allUs = order && order.length > 0 && order.every((t) => !String(t).endsWith('.T'));
+        const upd = { };
+        if (isIntraday && (allTse || allUs)) {
+          if (allTse) {
+            upd['xaxis.rangebreaks'] = [
+              { bounds: ['sat', 'mon'] },
+              { bounds: [15.5, 9.0], pattern: 'hour' },
+              { bounds: [11.5, 12.5], pattern: 'hour' },
+            ];
+          } else {
+            upd['xaxis.rangebreaks'] = [
+              { bounds: ['sat', 'mon'] },
+              { bounds: [16.0, 9.5], pattern: 'hour' },
+            ];
+          }
+        } else if (isIntraday && !allTse && !allUs) {
+          // Mixed markets (JP + US):
+          // - We overlay both markets in their *local clock* time (not absolute time).
+          // - Therefore, we can safely remove hours that are outside *both* sessions
+          //   (night hours), which eliminates large blank gaps between days.
+          // - Do NOT apply JP lunch-break rangebreak here (it would hide US midday).
+          upd['xaxis.rangebreaks'] = [
+            { bounds: ['sat', 'mon'] },
+            { bounds: [16.0, 9.0], pattern: 'hour' },
+          ];
+        } else {
+          upd['xaxis.rangebreaks'] = null;
+        }
+        Plotly.relayout(chartDiv, upd);
+      } catch (e) {}
+    }
+
+    function applyQuickRange(lbl) {
+      try {
+        if (!chartDiv || typeof Plotly === 'undefined') return;
+        function _afterPlotly(res, cb) {
+          try {
+            if (res && typeof res.then === 'function') res.then(cb);
+            else cb();
+          } catch (e) {
+            try { cb(); } catch (e2) {}
+          }
+        }
+
+        const wantIntraday = (lbl === '1日' || lbl === '5日');
+        const useIntraday = !!(
+          wantIntraday &&
+          datasets &&
+          datasets.intraday &&
+          datasets.intraday.x &&
+          datasets.intraday.x.length >= 2 &&
+          datasets.intraday.series &&
+          Object.keys(datasets.intraday.series).length > 0
+        );
+        const ds = useIntraday
+          ? datasets.intraday
+          : (datasets && datasets.daily && datasets.daily.x && datasets.daily.x.length >= 2
+            ? datasets.daily
+            : ((tableData && tableData.x && tableData.x.length >= 2) ? { x: tableData.x, series: series } : null));
+        if (!ds) {
+          _setQuickMsg(`${lbl}: dataなし`);
+          return;
+        }
+
+        const xs = ds.x || [];
+        const raw = ds.series || {};
+        _setQuickMsg(`${lbl}: ${useIntraday ? '分足' : (wantIntraday ? '日足(代替)' : '日足')} ${xs.length}`);
+        const info = _buildDateInfo(xs);
+        if (!info) {
+          _setQuickMsg(`${lbl}: date info失敗`);
+          return;
+        }
+        const lastX = info.xs[info.xs.length - 1];
+        const lastYmd = info.uniqueDates[info.uniqueDates.length - 1];
+        const lastUtc = _parseYmdUtc(lastYmd);
+        if (!lastUtc) return;
+
+        function _restyleAndRelayout(xUpd, yUpd, layoutUpd, cb) {
+          try {
+            const n = Math.min(
+              (chartDiv && chartDiv.data && chartDiv.data.length) ? chartDiv.data.length : xUpd.length,
+              xUpd.length,
+              yUpd.length
+            );
+            const traceIdx = Array.from({ length: n }, (_, i) => i);
+            const x2 = xUpd.slice(0, n);
+            const y2 = yUpd.slice(0, n);
+            const r1 = Plotly.restyle(chartDiv, { x: x2, y: y2 }, traceIdx);
+            const r2 = Plotly.relayout(chartDiv, layoutUpd || {});
+            _afterPlotly(r1, () => _afterPlotly(r2, () => { try { cb && cb(); } catch (e) {} }));
+          } catch (e) {
+            try { _setQuickMsg(`${lbl}: update失敗`); } catch (e2) {}
+          }
+        }
+
+        if (lbl === '最大') {
+          const xsView = xs.slice(0);
+          const outSeries = {};
+          for (const t of order) {
+            const arr = raw[t];
+            if (!arr || arr.length !== xs.length) continue;
+            const base = arr.find((v) => v != null && isFinite(v));
+            if (!base) continue;
+            outSeries[t] = arr.map((v) => (v != null && isFinite(v)) ? (v / base) : null);
+          }
+          const xUpd = order.map(() => xsView);
+          const yUpd = order.map((t) => outSeries[t] || new Array(xsView.length).fill(null));
+          _restyleAndRelayout(xUpd, yUpd, { 'xaxis.autorange': true }, () => {
+            _applyRangebreaks(useIntraday);
+            _activateData(xsView, outSeries);
+            try { suppressHoverLabels(); } catch (e) {}
+            setFrameHeight();
+          });
+          return;
+        }
+
+        let startIdx = 0;
+        if (lbl === '1日') {
+          startIdx = info.firstIndex[lastYmd] || 0;
+        } else if (lbl === '5日') {
+          const u = info.uniqueDates;
+          const startYmd = u[Math.max(0, u.length - 5)];
+          startIdx = info.firstIndex[startYmd] || 0;
+        } else if (lbl === '1か月') {
+          startIdx = _firstIndexFromThreshold(xs, _addMonthsUtc(lastUtc, -1));
+        } else if (lbl === '6か月') {
+          startIdx = _firstIndexFromThreshold(xs, _addMonthsUtc(lastUtc, -6));
+        } else if (lbl === '年初来') {
+          const y = lastUtc.getUTCFullYear();
+          startIdx = _firstIndexFromThreshold(xs, new Date(Date.UTC(y, 0, 1)));
+        } else if (lbl === '1年') {
+          startIdx = _firstIndexFromThreshold(xs, _addYearsUtc(lastUtc, -1));
+        } else if (lbl === '3年') {
+          startIdx = _firstIndexFromThreshold(xs, _addYearsUtc(lastUtc, -3));
+        } else if (lbl === '5年') {
+          startIdx = _firstIndexFromThreshold(xs, _addYearsUtc(lastUtc, -5));
+        }
+
+        startIdx = Math.max(0, Math.min(startIdx, xs.length - 2));
+        const xsView = xs.slice(startIdx);
+        const outSeries = {};
+        for (const t of order) {
+          const arr = raw[t];
+          if (!arr || arr.length !== xs.length) continue;
+          const view = arr.slice(startIdx);
+          let base = null;
+          for (let i = 0; i < view.length; i++) {
+            const v = view[i];
+            if (v != null && isFinite(v)) { base = v; break; }
+          }
+          if (!base) continue;
+          outSeries[t] = view.map((v) => (v != null && isFinite(v)) ? (v / base) : null);
+        }
+        const xUpd = order.map(() => xsView);
+        const yUpd = order.map((t) => outSeries[t] || new Array(xsView.length).fill(null));
+        _restyleAndRelayout(xUpd, yUpd, { 'xaxis.range': [xsView[0], xsView[xsView.length - 1]] }, () => {
+          _applyRangebreaks(useIntraday);
+          _activateData(xsView, outSeries);
+          try { suppressHoverLabels(); } catch (e) {}
+          setFrameHeight();
+        });
+      } catch (e) {}
+    }
+
     function prepareTablePayload(payload) {
       tableData = payload || null;
       order = (payload && payload.order) ? payload.order : [];
       names = (payload && payload.names) ? payload.names : {};
       colors = (payload && payload.colors) ? payload.colors : {};
       series = (payload && payload.series) ? payload.series : {};
+      datasets = {
+        daily: (payload && payload.daily) ? payload.daily : null,
+        intraday: (payload && payload.intraday) ? payload.intraday : null,
+      };
       xMs = null;
       lastIndex = -1;
       try {
@@ -245,6 +538,7 @@
       }
       buildTableSkeleton();
       if (xMs && xMs.length > 0) scheduleTableUpdate(xMs.length - 1);
+      buildQuickBar();
     }
 
     function renderFigure(fig, heightPx, payload) {

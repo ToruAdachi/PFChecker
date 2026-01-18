@@ -135,10 +135,20 @@ def _render_plotly_hover_sync_front(fig_dict: dict, table_payload: dict | None, 
 
     # Final HTML payload for the embedded iframe.
     html_code = head + injected + tail
-    # Provide a bit of extra room for the under-chart table and ensure the iframe
+    # Provide extra room for the under-chart table and ensure the iframe
     # has an explicit height (otherwise the chart can appear blank if the iframe
     # collapses to 0px in some deployments).
-    components.html(html_code, height=int(height) + 220, width="100%", scrolling=False)
+    #
+    # On mobile, the table can get clipped if the fixed extra margin is too small.
+    # We therefore scale the extra space by the number of rows (tickers) when available.
+    _extra = 240
+    try:
+        _n_rows = int(len((table_payload or {}).get("order") or []))
+        # Approx row height ~22-26px + header; cap to avoid excessive whitespace.
+        _extra = int(min(700, max(_extra, 140 + 26 * _n_rows)))
+    except Exception:
+        _extra = 240
+    components.html(html_code, height=int(height) + int(_extra), width="100%", scrolling=False)
 
 def render_plotly_with_hover_sync(fig, key: str, height: int = 450):
     """Render a Plotly figure.
@@ -473,12 +483,6 @@ def _apply_pending_date_range() -> None:
         st.session_state["start_date"] = str(start)
     if end:
         st.session_state["end_date"] = str(end)
-    # Reset quick-range selector so the same option can be chosen again.
-    try:
-        st.session_state["quick_range_row1"] = "（期間）"
-        st.session_state["quick_range_row2"] = "（期間）"
-    except Exception:
-        pass
 
 
 _apply_pending_date_range()
@@ -1552,13 +1556,40 @@ try:
 except Exception:
     fetch_start_dt = pd.to_datetime("2000-01-01")
 
-fetch_start = fetch_start_dt.strftime("%Y-%m-%d")
+_req_end_dt = pd.to_datetime(end_date)
 
-fetch_end = (pd.to_datetime(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+# Session anchors to avoid re-fetching the same historical data on every period switch.
+# - start anchor: only moves earlier when needed
+# - end anchor: only moves later when needed
+try:
+    _start_anchor_raw = st.session_state.get("_fetch_start_anchor")
+    _start_anchor = pd.to_datetime(_start_anchor_raw) if _start_anchor_raw else fetch_start_dt
+except Exception:
+    _start_anchor = fetch_start_dt
+try:
+    _end_anchor_raw = st.session_state.get("_fetch_end_anchor")
+    _end_anchor = pd.to_datetime(_end_anchor_raw) if _end_anchor_raw else _req_end_dt
+except Exception:
+    _end_anchor = _req_end_dt
+
+_start_anchor = min(_start_anchor, fetch_start_dt)
+_end_anchor = max(_end_anchor, _req_end_dt)
+
+st.session_state["_fetch_start_anchor"] = _start_anchor.strftime("%Y-%m-%d")
+st.session_state["_fetch_end_anchor"] = _end_anchor.strftime("%Y-%m-%d")
+
+fetch_start = _start_anchor.strftime("%Y-%m-%d")
+fetch_end = (_end_anchor + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 with st.spinner("データ取得中..."):
     prices_local = fetch_adjclose(tickers, fetch_start, fetch_end)
     usdjpy = fetch_usdjpy(fetch_start, fetch_end)
     prices_jpy_all = to_jpy(prices_local, meta_df, usdjpy)
+
+# Always compute using the selected end_date (even if we fetched beyond it for caching).
+try:
+    prices_jpy_all = prices_jpy_all.loc[prices_jpy_all.index <= _req_end_dt].copy()
+except Exception:
+    pass
 
 # Cache JPY prices for BL representative market mapping (used inside optimize_weights)
 st.session_state["_prices_jpy_cache"] = prices_jpy_all
@@ -1653,58 +1684,11 @@ if not readonly:
                 d2 = d2 - pd.Timedelta(days=1)
         return d2
 
-    _quick_defs = [
-        ("1日", _last_td, _last_td),
-        ("5日", _shift_trading_days(_last_td, 4), _last_td),
-        ("1か月", _today - pd.DateOffset(months=1), _today),
-        ("6か月", _today - pd.DateOffset(months=6), _today),
-        ("年初来", pd.Timestamp(year=_today.year, month=1, day=1), _today),
-        ("1年", _today - pd.DateOffset(years=1), _today),
-        ("3年", _today - pd.DateOffset(years=3), _today),
-        ("5年", _today - pd.DateOffset(years=5), _today),
-        ("最大", pd.Timestamp("2000-01-01"), _today),
-    ]
-
     # Swap order per request: display options first, quick buttons below.
     with st.expander("表示オプション", expanded=False):
         _log_price = st.checkbox("対数スケール（Y軸）", value=False, key="opt_individual_logy")
 
-    # Mobile: Streamlit columns collapse into 1-column (stacked) layout.
-    # Use horizontal radios (2 rows) to keep the quick-range controls compact.
-    _placeholder = "（期間）"
-    _qmap = {str(lbl): (sdt, edt) for (lbl, sdt, edt) in _quick_defs}
-    _row1 = [str(lbl) for (lbl, _, _) in _quick_defs[:5]]
-    _row2 = [str(lbl) for (lbl, _, _) in _quick_defs[5:]]
-
-    def _quick_radio(options: list[str], key: str) -> str:
-        try:
-            return st.radio(
-                "期間",
-                options=[_placeholder] + list(options),
-                horizontal=True,
-                label_visibility="collapsed",
-                index=0,
-                key=key,
-            )
-        except TypeError:
-            # Fallback for older Streamlit versions
-            return st.selectbox(
-                "期間",
-                options=[_placeholder] + list(options),
-                index=0,
-                key=key,
-            )
-
-    _sel1 = _quick_radio(_row1, key="quick_range_row1")
-    _sel2 = _quick_radio(_row2, key="quick_range_row2")
-    _sel = _sel1 if _sel1 != _placeholder else _sel2
-    if _sel and _sel != _placeholder and _sel in _qmap:
-        sdt, edt = _qmap[_sel]
-        st.session_state["_quick_range_pending"] = {
-            "start": pd.to_datetime(sdt).strftime("%Y-%m-%d"),
-            "end": pd.to_datetime(edt).strftime("%Y-%m-%d"),
-        }
-        st.rerun()
+    st.caption("期間のクイック切替はチャート上のボタンで行えます（個別チャートのみ・高速）。")
 else:
     # readonly: keep the existing expander UX
     with st.expander("表示オプション", expanded=False):
@@ -1732,6 +1716,7 @@ try:
     _use_intraday = _range_days < 31
     _all_tse = bool(portfolio_tickers) and all(str(t).endswith(".T") for t in portfolio_tickers)
     _all_us = bool(portfolio_tickers) and all(not str(t).endswith(".T") for t in portfolio_tickers)
+    _mixed_markets = bool(portfolio_tickers) and (not _all_tse) and (not _all_us)
 
     def _to_tz(idx: pd.DatetimeIndex, tz: str) -> pd.DatetimeIndex:
         """Best-effort tz conversion for market-hours filtering.
@@ -1764,6 +1749,128 @@ try:
         m = (t >= pd.to_datetime("09:30").time()) & (t <= pd.to_datetime("16:00").time())
         return np.asarray(m, dtype=bool)
 
+    def _normalize_intraday_index(idx: pd.DatetimeIndex, tz_name: str) -> pd.DatetimeIndex:
+        """Normalize intraday timestamps into market-local tz-naive times.
+
+        yfinance may return intraday timestamps as tz-aware UTC or tz-naive UTC/local depending on ticker/provider.
+        We try both interpretations (treat tz-naive as local vs as UTC) and pick the one that yields more points
+        inside the market session window.
+        """
+
+        def _session_mask_hours(times: np.ndarray, market_tz: str) -> np.ndarray:
+            if market_tz == "Asia/Tokyo":
+                t0930 = pd.to_datetime("09:00").time()
+                t1130 = pd.to_datetime("11:30").time()
+                t1230 = pd.to_datetime("12:30").time()
+                t1530 = pd.to_datetime("15:30").time()
+                m1 = (times >= t0930) & (times <= t1130)
+                m2 = (times >= t1230) & (times <= t1530)
+                return np.asarray(m1 | m2, dtype=bool)
+            # US/Eastern
+            t0930 = pd.to_datetime("09:30").time()
+            t1600 = pd.to_datetime("16:00").time()
+            return np.asarray((times >= t0930) & (times <= t1600), dtype=bool)
+
+        idx = pd.DatetimeIndex(pd.to_datetime(idx))
+        if getattr(idx, "tz", None) is not None:
+            try:
+                return idx.tz_convert(tz_name).tz_localize(None)
+            except Exception:
+                try:
+                    return idx.tz_localize(None)
+                except Exception:
+                    return idx
+
+        # Candidate A: interpret tz-naive as market-local
+        try:
+            cand_local = idx.tz_localize(tz_name, ambiguous="infer", nonexistent="shift_forward").tz_convert(tz_name)
+        except Exception:
+            cand_local = None
+        # Candidate B: interpret tz-naive as UTC
+        try:
+            cand_utc = idx.tz_localize("UTC").tz_convert(tz_name)
+        except Exception:
+            cand_utc = None
+
+        def _score(cand) -> int:
+            try:
+                if cand is None or len(cand) == 0:
+                    return 0
+                t = cand.time
+                return int(np.sum(_session_mask_hours(t, tz_name)))
+            except Exception:
+                return 0
+
+        s_local = _score(cand_local)
+        s_utc = _score(cand_utc)
+        best = cand_utc if s_utc > s_local else cand_local
+        if best is None:
+            return idx
+        try:
+            return best.tz_localize(None)
+        except Exception:
+            return idx
+
+    def _densify_intraday_series_5m(s: pd.Series, market: str) -> pd.Series:
+        """Densify intraday series to a 5-min grid within market sessions (session-local).
+
+        Purpose: Some tickers (esp. low-liquidity) have missing 5-min bars from Yahoo,
+        which renders as broken lines. Within trading sessions, we forward-fill on a
+        5-min grid to keep the line continuous while still leaving non-session gaps empty.
+        """
+        try:
+            if s is None:
+                return s
+            s = s.dropna()
+            if s.shape[0] < 2:
+                return s
+            s = s.sort_index()
+            try:
+                s = s[~s.index.duplicated(keep="last")]
+            except Exception:
+                pass
+
+            # Snap to 5-min grid (handles odd timestamps)
+            try:
+                _idx_floor = pd.DatetimeIndex(pd.to_datetime(s.index)).floor("5min")
+                s = s.groupby(_idx_floor).last()
+            except Exception:
+                pass
+
+            if market == "TSE":
+                _sessions = [("09:00", "11:30"), ("12:30", "15:30")]
+            else:
+                _sessions = [("09:30", "16:00")]
+
+            days = pd.DatetimeIndex(pd.to_datetime(s.index).normalize()).unique()
+            if len(days) == 0:
+                return s
+            days = pd.DatetimeIndex(days).sort_values()
+
+            parts: list[pd.Series] = []
+            for d in days:
+                dd = pd.Timestamp(d).date()
+                for a, b in _sessions:
+                    try:
+                        t0 = pd.Timestamp.combine(dd, pd.to_datetime(a).time())
+                        t1 = pd.Timestamp.combine(dd, pd.to_datetime(b).time())
+                        idx5 = pd.date_range(t0, t1, freq="5min")
+                        part = s.reindex(idx5).ffill()
+                        parts.append(part)
+                    except Exception:
+                        continue
+
+            if not parts:
+                return s
+            out = pd.concat(parts).sort_index()
+            try:
+                out = out[~out.index.duplicated(keep="last")]
+            except Exception:
+                pass
+            return out
+        except Exception:
+            return s
+
     if _use_intraday:
         # Choose a sensible interval by range (Yahoo limits apply; keep conservative)
         #  - <= 7d can use finer intervals; beyond that, go coarser.
@@ -1775,8 +1882,19 @@ try:
             _itv = "60m"
 
         # Fetch only the portfolio tickers for the chart (avoid perturbing PF analytics)
+        # For very short windows (1D/5D), keep a fixed fetch-start buffer so
+        # switching between 1日 and 5日 can hit the cache (same args).
+        _sd_fetch = _sd_ind
+        if _range_days <= 7:
+            _sd_fetch = _ed_ind - pd.Timedelta(days=7)
+
         _fetch_end = (_ed_ind + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        _px_local_i = fetch_adjclose(tuple(portfolio_tickers), _sd_ind.strftime("%Y-%m-%d"), _fetch_end, interval=_itv)
+        _px_local_i = fetch_adjclose(
+            tuple(portfolio_tickers),
+            _sd_fetch.strftime("%Y-%m-%d"),
+            _fetch_end,
+            interval=_itv,
+        )
         _px_jpy_i = to_jpy(_px_local_i, meta_df, usdjpy)
 
         # Trim to the requested window first
@@ -1785,26 +1903,6 @@ try:
         # Apply market-hours filtering per ticker. If filtering removes too much, keep unfiltered.
         _series_norm: dict[str, pd.Series] = {}
         _union_idx = None
-        def _normalize_intraday_index(idx: pd.DatetimeIndex, tz_name: str) -> pd.DatetimeIndex:
-            """Convert tz-naive intraday index to local market time when it looks like UTC."""
-            if getattr(idx, "tz", None) is None:
-                hrs = pd.Series(idx).dt.hour
-                if tz_name == "Asia/Tokyo":
-                    utc_like = (hrs <= 6).mean() > 0.6
-                elif tz_name == "US/Eastern":
-                    utc_like = ((hrs >= 12) & (hrs <= 23)).mean() > 0.6
-                else:
-                    utc_like = (hrs <= 6).mean() > 0.6
-                if utc_like:
-                    try:
-                        return idx.tz_localize("UTC").tz_convert(tz_name).tz_localize(None)
-                    except Exception:
-                        return idx
-                return idx
-            try:
-                return idx.tz_convert(tz_name).tz_localize(None)
-            except Exception:
-                return idx
 
         for _t in list(_px_jpy_i.columns):
             _s0 = _px_jpy_i[_t].dropna()
@@ -1827,6 +1925,8 @@ try:
                 continue
 
             _s1 = _s1.sort_index()
+            if _itv == "5m":
+                _s1 = _densify_intraday_series_5m(_s1, "TSE" if str(_t).endswith(".T") else "US")
             _s1 = _s1 / float(_s1.iloc[0])
             _series_norm[str(_t)] = _s1
             _union_idx = _s1.index if _union_idx is None else _union_idx.union(_s1.index)
@@ -1837,7 +1937,12 @@ try:
             _union_idx = _union_idx.sort_values()
             _px_df = pd.DataFrame(index=_union_idx)
             for _t, _s in _series_norm.items():
-                _px_df[_t] = _s.reindex(_union_idx).ffill()
+                # Mixed markets: do NOT fill missing points across the other market's timestamps.
+                # This keeps "out-of-session" periods visually absent instead of flat lines.
+                if _mixed_markets:
+                    _px_df[_t] = _s.reindex(_union_idx)
+                else:
+                    _px_df[_t] = _s.reindex(_union_idx).ffill()
 
     if not _use_intraday:
         # Daily: normalize each series independently (avoid dropping US tickers on 1D/5D windows)
@@ -1941,12 +2046,103 @@ try:
 
         # Front-only Level-2 UX: chart + table are updated in the component without
         # triggering Streamlit reruns on hover.
+        # Also include:
+        #  - daily (wide window) raw series for fast client-side range switching
+        #  - intraday (recent) raw series for 1D/5D buttons without reruns
+        _daily_payload = {}
+        _intraday_payload = {}
+        try:
+            _ed_for_payload = pd.to_datetime(end_date)
+            # For frontend quick-range (including "最大"), fetch a wide daily history
+            # independent of the sidebar eval window.
+            _daily_start = "2000-01-01"
+            _daily_end = (_ed_for_payload + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            _daily_local = fetch_adjclose(tuple(portfolio_tickers), _daily_start, _daily_end, interval="1d")
+            _daily_fx = fetch_usdjpy(_daily_start, _daily_end)
+            _daily_raw = to_jpy(_daily_local, meta_df, _daily_fx).sort_index()
+            _daily_raw = _daily_raw.reindex(columns=portfolio_tickers).ffill()
+            if _daily_raw.shape[0] >= 2 and _daily_raw.shape[1] >= 1:
+                _daily_payload = {
+                    "x": [ts.isoformat() for ts in _daily_raw.index],
+                    "series": {str(t): _daily_raw[t].astype(float).values for t in _daily_raw.columns},
+                }
+        except Exception:
+            _daily_payload = {}
+
+        try:
+            _now_ts = pd.Timestamp.now()
+            _ed_user = pd.to_datetime(end_date)
+            # Intraday data from Yahoo is only available for a limited recent window.
+            # Also, passing an end-date beyond "now" can yield empty intraday results.
+            _end_intr = min(_now_ts, _ed_user + pd.Timedelta(days=1))
+            if (_now_ts - _end_intr) > pd.Timedelta(days=60):
+                raise RuntimeError("intraday out of supported range")
+
+            _sd_recent = _end_intr - pd.Timedelta(days=7)
+            _px_local_r = fetch_adjclose(
+                tuple(portfolio_tickers),
+                _sd_recent,
+                _end_intr,
+                interval="5m",
+            )
+            _px_jpy_r = to_jpy(_px_local_r, meta_df, usdjpy)
+            _px_jpy_r = _px_jpy_r.sort_index().copy()
+            _px_jpy_r = _px_jpy_r.reindex(columns=portfolio_tickers)
+
+            _series_raw_r: dict[str, pd.Series] = {}
+            _union_idx_r = None
+            _has_tse_r = any(str(t).endswith(".T") for t in portfolio_tickers)
+            _has_us_r = any(not str(t).endswith(".T") for t in portfolio_tickers)
+            _mixed_markets_r = _has_tse_r and _has_us_r
+            for _t in list(_px_jpy_r.columns):
+                _s0 = _px_jpy_r[_t].dropna()
+                if _s0.empty:
+                    continue
+
+                if str(_t).endswith(".T"):
+                    _s0.index = _normalize_intraday_index(_s0.index, "Asia/Tokyo")
+                    _mask = _tse_hours_mask(_s0.index)
+                else:
+                    _s0.index = _normalize_intraday_index(_s0.index, "US/Eastern")
+                    _mask = _us_hours_mask(_s0.index)
+
+                _s1 = _s0.loc[_mask] if _mask is not None else _s0
+                if _s1.shape[0] < 2 and _s0.shape[0] >= 2:
+                    _s1 = _s0
+                if _s1.shape[0] < 2:
+                    continue
+
+                _s1 = _s1.sort_index()
+                _s1 = _densify_intraday_series_5m(_s1, "TSE" if str(_t).endswith(".T") else "US")
+                _series_raw_r[str(_t)] = _s1
+                _union_idx_r = _s1.index if _union_idx_r is None else _union_idx_r.union(_s1.index)
+
+            if _union_idx_r is not None and len(_union_idx_r) >= 2:
+                _union_idx_r = _union_idx_r.sort_values()
+                _raw_df_r = pd.DataFrame(index=_union_idx_r)
+                for _t, _s in _series_raw_r.items():
+                    # Mixed markets (JP+US): keep each market's local clock time (tz-naive) so
+                    # sessions visually overlap; also avoid forward-filling across the other
+                    # market's timestamps so off-session periods remain empty.
+                    if _mixed_markets_r:
+                        _raw_df_r[_t] = _s.reindex(_union_idx_r)
+                    else:
+                        _raw_df_r[_t] = _s.reindex(_union_idx_r).ffill()
+                _intraday_payload = {
+                    "x": [ts.isoformat() for ts in _raw_df_r.index],
+                    "series": {str(t): _raw_df_r[str(t)].astype(float).values for t in _raw_df_r.columns},
+                }
+        except Exception:
+            _intraday_payload = {}
+
         _table_payload = {
             "x": [ts.isoformat() for ts in _norm.index],
             "order": [str(t) for t in _norm.columns],
             "names": {str(t): str(meta_name_map.get(t, t)) for t in _norm.columns},
             "colors": {str(k): str(v) for k, v in _color_map.items()},
             "series": {str(t): _norm[t].astype(float).values for t in _norm.columns},
+            "daily": _daily_payload,
+            "intraday": _intraday_payload,
         }
         # Respect sidebar graph-size controls
         render_plotly_with_table_front(fig_prices, _table_payload, key="prices_front", height=plotly_height_px)
