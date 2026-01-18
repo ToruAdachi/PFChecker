@@ -13,6 +13,22 @@
 - 実行環境は Raspberry Pi（systemd 管理）を前提とする。
 
 ## 実行方法（確定）
+### 実行対象 / エントリポイント
+- 現行コードは `app/` 配下である。
+- エントリポイントは `app/refactored_app/app.py` である。
+- 依存管理ファイル（requirements.txt 等）は `app/` 配下に見当たらないため、実行環境は venv 前提。
+
+### 推奨起動コマンド（推測禁止 / 参照元あり）
+- ローカル実行（`app/refactored_app` で実行）：
+  `streamlit run app.py`
+  根拠: `app/refactored_app/README.md`
+- Raspberry Pi（本番相当）：
+  `sudo systemctl start streamlit-app`
+  根拠: `app/refactored_app/deploy/INSTALL_RPI.md`
+- systemd 実体コマンド（参照のみ）：
+  `/home/pi/venv/bin/streamlit run /home/pi/refactored_app_current/app.py --server.port 8501 --server.address 0.0.0.0`
+  根拠: `app/refactored_app/deploy/streamlit-app.service`
+
 ### Raspberry Pi（本番相当）
 - アプリ本体は以下のディレクトリに配置されている前提：
   `/home/pi/refactored_app_current`
