@@ -28,7 +28,8 @@
     }
     #table .hdr .title { font-weight: 600; }
     #table table {
-      width: auto;
+      width: 100%;
+      table-layout: fixed;
       border-collapse: collapse;
     }
     #table thead th {
@@ -39,14 +40,16 @@
       color: rgba(49, 51, 63, 0.85);
     }
     #table thead th:first-child { text-align: left; }
+    /* Keep the % column narrow so the name column doesn't overflow on mobile */
+    #table thead th:nth-child(2),
+    #table tbody td:nth-child(2) { width: 84px; }
     #table tbody td {
       padding: 3px 6px;
       border-bottom: 1px solid rgba(49, 51, 63, 0.08);
       vertical-align: middle;
     }
-    #table tbody td:nth-child(1) { text-align: left; white-space: nowrap; }
-    #table tbody td:nth-child(2) { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #table tbody td:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+    #table tbody td:nth-child(1) { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #table tbody td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .swatch {
       display: inline-block;
       width: 10px;
@@ -63,8 +66,19 @@
 
     /* Ticker name (secondary text) */
     .name {
+      display: inline-block;
+      max-width: 160px;
       margin-left: 6px;
       color: rgba(49, 51, 63, 0.72);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      vertical-align: bottom;
+      white-space: nowrap;
+    }
+    @media (max-width: 480px) {
+      .name { max-width: 110px; }
+      #table thead th:nth-child(2),
+      #table tbody td:nth-child(2) { width: 76px; }
     }
     /* NOTE:
       We do not mask the chart area, because it can hide titles and axis labels.
