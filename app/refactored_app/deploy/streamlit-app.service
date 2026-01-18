@@ -1,0 +1,23 @@
+[Unit]
+Description=Streamlit Asset App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+
+# IMPORTANT:
+#  - Place the app code at /home/pi/refactored_app_current/
+#  - Place external files (data_j.xls, portfolios.json, csv/json caches) at /home/pi/
+WorkingDirectory=/home/pi/refactored_app_current
+
+# Adjust the venv path if your virtualenv differs.
+ExecStart=/home/pi/venv/bin/streamlit run /home/pi/refactored_app_current/app.py --server.port 8501 --server.address 0.0.0.0
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
