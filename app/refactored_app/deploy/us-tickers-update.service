@@ -1,0 +1,9 @@
+[Unit]
+Description=Update US tickers CSV (NYSE+NASDAQ) for the Streamlit app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+ExecStart=/home/pi/venv/bin/python /home/pi/refactored_app_current/deploy/build_us_ticker_dict.py

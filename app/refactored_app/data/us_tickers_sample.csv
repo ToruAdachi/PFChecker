@@ -1,0 +1,12 @@
+symbol,name,exchange,asset_class
+AAPL,Apple Inc.,NASDAQ,equity
+MSFT,Microsoft Corporation,NASDAQ,equity
+AMZN,Amazon.com Inc.,NASDAQ,equity
+GOOGL,Alphabet Inc. Class A,NASDAQ,equity
+TSLA,Tesla Inc.,NASDAQ,equity
+TSM,Taiwan Semiconductor Manufacturing Co. Ltd. ADR,NYSE,equity
+BRK-B,Berkshire Hathaway Inc. Class B,NYSE,equity
+JNJ,Johnson & Johnson,NYSE,equity
+V,Visa Inc. Class A,NYSE,equity
+BTC-USD,Bitcoin,CRYPTO,crypto
+ETH-USD,Ethereum,CRYPTO,crypto

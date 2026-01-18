@@ -1,0 +1,433 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+    /* Height is dynamically overridden from Python via renderFigure(heightPx). */
+    #chart { width: 100%; height: 360px; }
+    /* Hide Plotly hover labels/tooltips while keeping hover/click events and spikelines.
+       On mobile, Plotly can render a hover box that sometimes contains only color swatches;
+       hiding the entire hoverlayer removes that box while preserving spikelines (separate layer). */
+    #table {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 10px 10px 10px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+    #table .hdr {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 0 6px 0;
+      color: rgba(49, 51, 63, 0.8);
+    }
+    #table .hdr .title { font-weight: 600; }
+    #table table {
+      width: auto;
+      border-collapse: collapse;
+    }
+    #table thead th {
+      text-align: right;
+      font-weight: 600;
+      padding: 4px 6px;
+      border-bottom: 1px solid rgba(49, 51, 63, 0.15);
+      color: rgba(49, 51, 63, 0.85);
+    }
+    #table thead th:first-child { text-align: left; }
+    #table tbody td {
+      padding: 3px 6px;
+      border-bottom: 1px solid rgba(49, 51, 63, 0.08);
+      vertical-align: middle;
+    }
+    #table tbody td:nth-child(1) { text-align: left; white-space: nowrap; }
+    #table tbody td:nth-child(2) { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #table tbody td:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+    .swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+  
+    /* Added by full v5.0.1: compact spacing */
+    #table td, #table th { padding-right: 8px; }
+    #table tbody td:nth-child(2),
+    #table tbody td:nth-child(3) { white-space: nowrap; }
+
+    /* Ticker name (secondary text) */
+    .name {
+      margin-left: 6px;
+      color: rgba(49, 51, 63, 0.72);
+    }
+    /* NOTE:
+      We do not mask the chart area, because it can hide titles and axis labels.
+      Hover labels are minimized via Plotly layout.hoverlabel in renderFigure().
+    */
+
+</style>
+</head>
+<body>
+  <div id="chart"></div>
+  <div id="table"></div>
+  <script src="https://cdn.plot.ly/plotly-2.4.1.min.js"></script>
+  <script>
+    const chartDiv = document.getElementById('chart');
+    const tableDiv = document.getElementById('table');
+    let lastFigKey = null;
+    let tableData = null;
+    let xMs = null;
+    let order = [];
+    let names = {};
+    let colors = {};
+    let series = {};
+    let lastIndex = -1;
+    let rafPending = false;
+
+    function postToStreamlit(msg) {
+      window.parent.postMessage({ isStreamlitMessage: true, ...msg }, '*');
+    }
+
+    function setFrameHeight() {
+      try {
+        const height = Math.max(document.body.scrollHeight || 0, 420);
+        postToStreamlit({ type: 'streamlit:setFrameHeight', height });
+      } catch (e) {
+        postToStreamlit({ type: 'streamlit:setFrameHeight', height: 420 });
+      }
+    }
+
+    function buildTableSkeleton() {
+      if (!tableDiv) return;
+      tableDiv.innerHTML = '';
+
+      const hdr = document.createElement('div');
+      hdr.className = 'hdr';
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = 'カーソル時点の変化率';
+      const stamp = document.createElement('div');
+      stamp.className = 'stamp';
+      stamp.textContent = '';
+      hdr.appendChild(title);
+      hdr.appendChild(stamp);
+      tableDiv.appendChild(hdr);
+
+      const tbl = document.createElement('table');
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      const th0 = document.createElement('th');
+      th0.textContent = '銘柄';
+      const th1 = document.createElement('th');
+      th1.textContent = '変化率(%)';
+      trh.appendChild(th0);
+      trh.appendChild(th1);
+      thead.appendChild(trh);
+      tbl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      tbl.appendChild(tbody);
+      tableDiv.appendChild(tbl);
+    }
+
+    function setStamp(text) {
+      const el = tableDiv && tableDiv.querySelector && tableDiv.querySelector('.stamp');
+      if (el) el.textContent = text || '';
+    }
+
+    function nearestIndex(ms) {
+      if (!xMs || xMs.length === 0 || !isFinite(ms)) return -1;
+      // Binary search for rightmost <= ms
+      let lo = 0;
+      let hi = xMs.length - 1;
+      if (ms <= xMs[0]) return 0;
+      if (ms >= xMs[hi]) return hi;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = xMs[mid];
+        if (v === ms) return mid;
+        if (v < ms) lo = mid + 1;
+        else hi = mid - 1;
+      }
+      return Math.max(0, hi);
+    }
+
+    function renderTableAtIndex(idx) {
+      if (!tableDiv || !series || !order || idx < 0) return;
+      if (idx === lastIndex) return;
+      lastIndex = idx;
+
+      const tbody = tableDiv.querySelector('tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+
+      // Compute rows
+      const rows = [];
+      for (const t of order) {
+        const arr = series[t];
+        if (!arr || idx >= arr.length) continue;
+        const v = arr[idx];
+        if (v == null || !isFinite(v)) continue;
+        const pct = (v - 1.0) * 100.0;
+        rows.push({ ticker: t, name: names[t] || t, pct: pct, color: colors[t] || '#777' });
+      }
+      // Keep fixed order (no resort on hover)
+
+      for (const r of rows) {
+        const tr = document.createElement('tr');
+        const td0 = document.createElement('td');
+        td0.style.textAlign = 'left';
+        const sw = document.createElement('span');
+        sw.className = 'swatch';
+        sw.style.background = r.color;
+        td0.appendChild(sw);
+        const txt = document.createElement('span');
+        txt.textContent = `${r.ticker}`;
+        txt.title = `${r.name}`;
+        td0.appendChild(txt);
+
+        // Visible name next to ticker (if available and not identical)
+        if (r.name && r.name !== r.ticker) {
+          const nm = document.createElement('span');
+          nm.className = 'name';
+          nm.textContent = `${r.name}`;
+          td0.appendChild(nm);
+        }
+
+        const td1 = document.createElement('td');
+        td1.style.textAlign = 'right';
+        td1.textContent = (Math.round(r.pct * 100) / 100).toFixed(2);
+        tr.appendChild(td0);
+        tr.appendChild(td1);
+        tbody.appendChild(tr);
+      }
+
+      // timestamp label
+      try {
+        const iso = tableData && tableData.x && tableData.x[idx] ? tableData.x[idx] : '';
+        setStamp(iso ? `@ ${iso}` : '');
+      } catch (e) {}
+
+      setFrameHeight();
+    }
+
+    function scheduleTableUpdate(idx) {
+      if (rafPending) {
+        lastIndex = -1; // force update on next frame
+      }
+      rafPending = true;
+      window.requestAnimationFrame(() => {
+        rafPending = false;
+        renderTableAtIndex(idx);
+      });
+    }
+
+    function prepareTablePayload(payload) {
+      tableData = payload || null;
+      order = (payload && payload.order) ? payload.order : [];
+      names = (payload && payload.names) ? payload.names : {};
+      colors = (payload && payload.colors) ? payload.colors : {};
+      series = (payload && payload.series) ? payload.series : {};
+      xMs = null;
+      lastIndex = -1;
+      try {
+        const xs = (payload && payload.x) ? payload.x : [];
+        xMs = xs.map((s) => Date.parse(s));
+      } catch (e) {
+        xMs = null;
+      }
+      buildTableSkeleton();
+      if (xMs && xMs.length > 0) scheduleTableUpdate(xMs.length - 1);
+    }
+
+    function renderFigure(fig, heightPx, payload) {
+      try {
+        prepareTablePayload(payload || null);
+
+        if (!fig || !fig.data) {
+          if (typeof Plotly !== 'undefined') Plotly.purge(chartDiv);
+          setFrameHeight();
+          return;
+        }
+
+        fig.layout = fig.layout || {};
+        fig.layout.showlegend = false;
+
+        // Disable on-chart hover labels (mobile tap shows large hover box otherwise).
+        // We still rely on hover/click/touch events to sync the table.
+        try {
+          if (fig.data && Array.isArray(fig.data)) {
+            for (const tr of fig.data) {
+              // Disable hover labels but keep hover/click events for mobile/desktop sync
+              tr.hoverinfo = 'none';
+              tr.hovertemplate = '';
+            }
+          }
+        } catch (e) {}
+
+
+        // Ensure enough bottom margin for x-axis labels
+        fig.layout.margin = fig.layout.margin || {};
+        fig.layout.margin.b = Math.max(fig.layout.margin.b || 0, 60);
+
+        // Enable vertical spikeline on x-axis (mouse & touch).
+        // Spikelines are rendered in Plotly's hoverlayer; do not hide the whole hoverlayer.
+        fig.layout.hovermode = fig.layout.hovermode || 'x';
+
+        // Keep hover/click events (for table sync) but make hover label as small/transparent as possible.
+        fig.layout.hoverlabel = fig.layout.hoverlabel || {};
+        fig.layout.hoverlabel.bgcolor = 'rgba(0,0,0,0)';
+        fig.layout.hoverlabel.bordercolor = 'rgba(0,0,0,0)';
+        fig.layout.hoverlabel.font = fig.layout.hoverlabel.font || {};
+        fig.layout.hoverlabel.font.size = 1;
+        fig.layout.hoverlabel.font.color = 'rgba(0,0,0,0)';
+        fig.layout.hoverlabel.namelength = 0;
+
+        fig.layout.xaxis = fig.layout.xaxis || {};
+        fig.layout.xaxis.showspikes = true;
+        fig.layout.xaxis.spikemode = 'across';
+        fig.layout.xaxis.spikesnap = 'cursor';
+        fig.layout.xaxis.spikedash = 'dot';
+        fig.layout.xaxis.spikethickness = 1;
+        // Keep spike visible even when unified hover labels are hidden.
+        fig.layout.xaxis.spikecolor = fig.layout.xaxis.spikecolor || 'rgba(0,0,0,0.35)';
+
+        if (heightPx) {
+          try {
+            const h = Math.max(parseInt(heightPx, 10) || 0, 360);
+            chartDiv.style.height = h + 'px';
+            // Ensure Plotly respects the new height even when responsive is enabled.
+            fig.layout.height = h;
+          } catch (e) {}
+        }
+
+                if (typeof Plotly === 'undefined') {
+          tableDiv.innerHTML = '<div style="padding:8px 10px;color:#b00;font-family:sans-serif;font-size:12px">Plotly failed to load in the component iframe.</div>';
+          setFrameHeight();
+          return;
+        }
+
+const config = { displayModeBar: false, responsive: true };
+
+        Plotly.react(chartDiv, fig.data, fig.layout, config).then(() => {
+          attachHoverHandler();
+          setFrameHeight();
+        });
+      } catch (e) {
+        setFrameHeight();
+      }
+    }
+
+    let _hoverAttached = false;
+    function attachHoverHandler() {
+      if (_hoverAttached) return;
+      if (!chartDiv || typeof chartDiv.on !== 'function') return;
+      _hoverAttached = true;
+      try {
+        chartDiv.on('plotly_hover', (ev) => {
+          const pt = ev && ev.points && ev.points[0];
+          const x = pt ? pt.x : null;
+          let ms;
+          if (x instanceof Date) ms = x.getTime();
+          else if (typeof x === 'number') ms = x;
+          else ms = Date.parse(x);
+          const idx = nearestIndex(ms);
+          if (idx >= 0) scheduleTableUpdate(idx);
+        });
+        // MOBILE_TOUCH_V1
+        // Mobile/touch: tap updates table (hover often doesn't fire on touch)
+        chartDiv.on('plotly_click', (ev) => {
+          try {
+            const pt = ev && ev.points && ev.points[0];
+            const x = pt ? pt.x : null;
+            let ms;
+            if (x instanceof Date) ms = x.getTime();
+            else if (typeof x === 'number') ms = x;
+            else ms = Date.parse(x);
+            const idx = nearestIndex(ms);
+            if (idx >= 0) scheduleTableUpdate(idx);
+          } catch (e) {}
+        });
+
+        // Finger drag: convert pixel -> x (ms) using Plotly axis mapping
+        let _lastTouchT = 0;
+        chartDiv.addEventListener('touchmove', (e) => {
+          const now = performance.now();
+          if (now - _lastTouchT < 40) return; // ~25fps throttle
+          _lastTouchT = now;
+          try {
+            const t = e.touches && e.touches[0];
+            if (!t) return;
+            if (!chartDiv._fullLayout || !chartDiv._fullLayout.xaxis) return;
+            const xa = chartDiv._fullLayout.xaxis;
+            const rect = chartDiv.getBoundingClientRect();
+            const xpx = t.clientX - rect.left;
+            const xv = xa.p2d(xpx);
+            if (xv === undefined || xv === null || Number.isNaN(xv)) return;
+            const ms = (xv instanceof Date) ? xv.getTime() : Number(xv);
+            if (!Number.isFinite(ms)) return;
+            const idx = nearestIndex(ms);
+            if (idx >= 0) scheduleTableUpdate(idx);
+          } catch (err) {}
+        }, { passive: true });
+
+        chartDiv.on('plotly_unhover', () => {
+          // Keep last hovered value (no change)
+        });
+        chartDiv.on('plotly_relayout', () => { setFrameHeight(); });
+      } catch (e) {
+        _hoverAttached = false;
+      }
+    }
+
+    // ResizeObserver: Plotly does not always detect parent layout changes (e.g., Streamlit sidebar).
+    // We observe the component root and force Plotly resize without triggering a Streamlit rerun.
+    let _ro = null;
+    let _resizeRaf = false;
+    function _schedulePlotlyResize() {
+      if (_resizeRaf) return;
+      _resizeRaf = true;
+      window.requestAnimationFrame(() => {
+        _resizeRaf = false;
+        try {
+          if (typeof Plotly !== 'undefined' && chartDiv && chartDiv.data) {
+            Plotly.Plots.resize(chartDiv);
+          }
+        } catch (e) {}
+        try { setFrameHeight(); } catch (e) {}
+      });
+    }
+
+    try {
+      if (typeof ResizeObserver !== 'undefined') {
+        _ro = new ResizeObserver(() => _schedulePlotlyResize());
+        _ro.observe(document.body);
+      } else {
+        window.addEventListener('resize', _schedulePlotlyResize);
+      }
+    } catch (e) {}
+
+	    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || data.type !== 'streamlit:render') return;
+      const args = data.args || {};
+      const key = args._fig_key || null;
+      if (key && key === lastFigKey) {
+        setFrameHeight();
+        return;
+      }
+      lastFigKey = key;
+      renderFigure(args.fig || null, args.height || null, args.table || null);
+    });
+
+    postToStreamlit({ type: 'streamlit:componentReady', apiVersion: 1 });
+    setFrameHeight();
+  </script>
+</body>
+</html>

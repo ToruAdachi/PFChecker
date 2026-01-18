@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily update for US tickers CSV (NYSE+NASDAQ)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
