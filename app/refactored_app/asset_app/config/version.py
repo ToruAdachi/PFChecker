@@ -5,4 +5,4 @@ and used for operational debugging ("which build is running?").
 """
 
 # Three-part numeric version (major.minor.patch)
-VERSION = "5.2.1.2"
+VERSION = "5.2.2.0"

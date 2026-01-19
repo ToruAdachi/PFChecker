@@ -13,7 +13,11 @@ def build_buy_and_hold_pf(
     prices_jpy: pd.DataFrame, weights: pd.Series, initial_value: float
 ):
     w = weights.reindex(prices_jpy.columns).fillna(0.0)
-    w = w / w.sum()
+    w_sum = float(w.sum())
+    if w_sum > 0:
+        w = w / w_sum
+    elif len(prices_jpy.columns) > 0:
+        w = pd.Series(1.0 / float(len(prices_jpy.columns)), index=prices_jpy.columns)
     p0 = prices_jpy.iloc[0]
     shares = (initial_value * w) / p0
     pf_value = (prices_jpy * shares).sum(axis=1)
@@ -88,7 +92,11 @@ def build_rebalanced_pf_with_tax(
     tickers = list(prices.columns)
 
     w = target_weights.reindex(tickers).fillna(0.0).astype(float)
-    w = w / w.sum()
+    w_sum = float(w.sum())
+    if w_sum > 0:
+        w = w / w_sum
+    elif len(tickers) > 0:
+        w = pd.Series(1.0 / float(len(tickers)), index=tickers)
 
     rebalance_dates = get_rebalance_dates(prices.index, rebalance_freq)
 
@@ -192,7 +200,11 @@ def build_threshold_rebalanced_pf_with_tax(
     tickers = list(prices.columns)
 
     w_target = target_weights.reindex(tickers).fillna(0.0).astype(float)
-    w_target = w_target / w_target.sum()
+    w_sum = float(w_target.sum())
+    if w_sum > 0:
+        w_target = w_target / w_sum
+    elif len(tickers) > 0:
+        w_target = pd.Series(1.0 / float(len(tickers)), index=tickers)
 
     p0 = prices.iloc[0]
     shares = (initial_value * w_target) / p0

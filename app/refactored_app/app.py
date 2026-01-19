@@ -74,7 +74,7 @@ def _load_plotly_hover_sync_index_html(mtime: float) -> str:
         return ""
 
 
-def _render_plotly_hover_sync_front(fig_dict: dict, table_payload: dict | None, height: int, key: str):
+def _render_plotly_hover_sync_front(fig_dict: dict, table_payload: dict | None, height: int, key: str, width: int | None = None):
     """Render Plotly + synced table purely in the frontend (no Streamlit component)."""
     import json as _json
 
@@ -110,6 +110,7 @@ def _render_plotly_hover_sync_front(fig_dict: dict, table_payload: dict | None, 
         "fig": fig_dict or {},
         "table": table_payload or {},
         "height": int(height),
+        "width": int(width) if width is not None else None,
         "_fig_key": str(key),
     }
 
@@ -117,7 +118,7 @@ def _render_plotly_hover_sync_front(fig_dict: dict, table_payload: dict | None, 
         "\n    // --- injected initial render (standalone iframe) ---\n"
         f"    const __ARGS__ = {_json.dumps(args, ensure_ascii=False)};\n"
         "    try {\n"
-        "      renderFigure(__ARGS__.fig || null, __ARGS__.height || null, __ARGS__.table || null);\n"
+        "      renderFigure(__ARGS__.fig || null, __ARGS__.height || null, __ARGS__.table || null, __ARGS__.width || null);\n"
         "    } catch (e) {\n"
         "      const t = document.getElementById('table');\n"
         "      if (t) { t.innerHTML = '<div style=\"padding:8px;color:#b00020;font-family:system-ui\">Plotly render failed: ' + String(e) + '</div>'; }\n"
@@ -148,7 +149,8 @@ def _render_plotly_hover_sync_front(fig_dict: dict, table_payload: dict | None, 
         _extra = int(min(700, max(_extra, 140 + 26 * _n_rows)))
     except Exception:
         _extra = 240
-    components.html(html_code, height=int(height) + int(_extra), width="100%", scrolling=False)
+    _width_arg = int(width) if (width is not None and int(width) > 0) else None
+    components.html(html_code, height=int(height) + int(_extra), width=_width_arg, scrolling=False)
 
 def render_plotly_with_hover_sync(fig, key: str, height: int = 450):
     """Render a Plotly figure.
@@ -210,11 +212,11 @@ def render_plotly_with_hover_sync(fig, key: str, height: int = 450):
     except Exception:
         fig_dict = {}
 
-    _render_plotly_hover_sync_front(fig_dict, table_payload=None, height=height, key=key)
+    _render_plotly_hover_sync_front(fig_dict, table_payload=None, height=height, key=key, width=None)
     return None
 
 
-def render_plotly_with_table_front(fig, table_payload: dict, key: str, height: int = 450):
+def render_plotly_with_table_front(fig, table_payload: dict, key: str, height: int = 450, width: int | None = None):
     """Render Plotly + under-chart table entirely in the frontend.
 
     This avoids Streamlit reruns on high-frequency hover events.
@@ -253,7 +255,7 @@ def render_plotly_with_table_front(fig, table_payload: dict, key: str, height: i
     except Exception:
         fig_dict = {}
     payload = _to_jsonable(table_payload or {})
-    _render_plotly_hover_sync_front(fig_dict, table_payload=payload, height=height, key=key)
+    _render_plotly_hover_sync_front(fig_dict, table_payload=payload, height=height, key=key, width=width)
     return None
 
 
@@ -1088,18 +1090,29 @@ min_target_for_rel = st.sidebar.number_input(
 
 # ----- グラフサイズ -----
 st.sidebar.markdown("---")
-st.sidebar.subheader("グラフサイズ")
-fig_width = st.sidebar.slider(
-    "横幅（inch）", min_value=6, max_value=20, value=12, step=1
+st.sidebar.subheader("グラフサイズ（表示）")
+display_width_px = st.sidebar.slider(
+    "横幅（px）", min_value=360, max_value=1600, value=1200, step=20
 )
-fig_height = st.sidebar.slider(
-    "縦幅（inch）", min_value=4, max_value=14, value=4, step=1
+display_height_px = st.sidebar.slider(
+    "縦幅（px）", min_value=200, max_value=1000, value=320, step=20
 )
-fig_dpi = st.sidebar.slider("DPI", min_value=80, max_value=200, value=100, step=10)
 
-# Plotly height (px). Streamlit's plotly renderer respects layout.height.
-# We keep it aligned with the sidebar "inch x DPI" controls for a consistent UX.
-plotly_height_px = int(max(320, fig_height * fig_dpi))
+# Display size is controlled in px for easier tuning across devices.
+# Matplotlib uses inch x DPI, so we convert with a fixed display DPI.
+_DISPLAY_DPI = 100
+fig_width = float(display_width_px) / float(_DISPLAY_DPI)
+fig_height = float(display_height_px) / float(_DISPLAY_DPI)
+fig_dpi = int(_DISPLAY_DPI)
+
+# Plotly height (px). Streamlit's Plotly renderer respects layout.height.
+plotly_height_px = int(max(200, display_height_px))
+
+# PDF export sizing (legacy inch/DPI controls)
+with st.sidebar.expander("PDF出力サイズ（inch/DPI）", expanded=False):
+    pdf_fig_width = st.slider("横幅（inch）", min_value=6, max_value=20, value=12, step=1, key="pdf_fig_width_in")
+    pdf_fig_height = st.slider("縦幅（inch）", min_value=3, max_value=14, value=4, step=1, key="pdf_fig_height_in")
+    pdf_fig_dpi = st.slider("DPI", min_value=80, max_value=200, value=100, step=10, key="pdf_fig_dpi")
 
 # ----- 静的最適化：学習期間 -----
 st.sidebar.markdown("---")
@@ -1629,6 +1642,22 @@ if _dropped:
         + ", ".join([str(x) for x in _dropped])
     )
 
+# Evaluation weights must match the actually-available price columns.
+# When a high-weight ticker is dropped (e.g., newly listed / Yahoo data missing),
+# the remaining weights can accidentally sum to 0 and make downstream charts blank.
+weights_eval = weights.reindex(prices_jpy_pf_aligned.columns).fillna(0.0).astype(float)
+_w_sum = float(weights_eval.sum()) if prices_jpy_pf_aligned.shape[1] > 0 else 0.0
+if _w_sum > 0:
+    weights_eval = weights_eval / _w_sum
+elif prices_jpy_pf_aligned.shape[1] > 0:
+    st.warning(
+        "ウェイト合計が0になったため、評価用のPF計算は残り銘柄の等ウェイトで代替します。"
+        "（データ無しで除外された銘柄のウェイトを調整してください）"
+    )
+    weights_eval = pd.Series(
+        1.0 / float(prices_jpy_pf_aligned.shape[1]), index=prices_jpy_pf_aligned.columns
+    )
+
 bench_price_aligned = None
 if benchmark_df is not None:
     bench_ticker = benchmark_df.iloc[0]["ticker"]
@@ -2145,7 +2174,13 @@ try:
             "intraday": _intraday_payload,
         }
         # Respect sidebar graph-size controls
-        render_plotly_with_table_front(fig_prices, _table_payload, key="prices_front", height=plotly_height_px)
+        render_plotly_with_table_front(
+            fig_prices,
+            _table_payload,
+            key="prices_front",
+            height=plotly_height_px,
+            width=int(display_width_px),
+        )
     else:
         st.info("プロットに必要なデータ点が不足しています。")
 except Exception as e:
@@ -2157,7 +2192,7 @@ except Exception as e:
 st.subheader("PF（指数化 Start=100）")
 
 shares, pf_value, pf_index = build_buy_and_hold_pf(
-    prices_jpy_pf_aligned, weights, initial_value
+    prices_jpy_pf_aligned, weights_eval, initial_value
 )
 metrics_bh, _, _ = calc_metrics_from_pf(
     pf_value, trading_days_per_year, rf_annual=rf_annual
@@ -2182,7 +2217,7 @@ if rebalance_mode != "なし（買いっぱなし）":
         ]
         pv_rt, pi_rt, tax_paid = build_rebalanced_pf_with_tax(
             prices_jpy_pf_aligned,
-            target_weights=weights,
+            target_weights=weights_eval,
             initial_value=initial_value,
             rebalance_freq=freq,
             tax_rate=tax_rate,
@@ -2193,7 +2228,7 @@ if rebalance_mode != "なし（買いっぱなし）":
         pv_rt, pi_rt, tax_paid, reb_flag, max_rel_dev = (
             build_threshold_rebalanced_pf_with_tax(
                 prices_jpy_pf_aligned,
-                target_weights=weights,
+                target_weights=weights_eval,
                 initial_value=initial_value,
                 threshold_rel=float(threshold_rel),
                 cooldown_days=int(cooldown_days),
@@ -2319,7 +2354,11 @@ if len(opt_weights_map_visible) > 0:
         opt_pf_indices[label] = pi_opt
 
         with st.expander(f"{label} ウェイト"):
-            st.dataframe(w_opt.sort_values(ascending=False).to_frame("weight"))
+            _w_tbl = w_opt.sort_values(ascending=False).to_frame("Weight")
+            _w_tbl.insert(
+                0, "銘柄名", [str(meta_name_map.get(str(t), str(t))) for t in _w_tbl.index]
+            )
+            st.dataframe(_w_tbl, use_container_width=True)
             if not readonly:
                 if st.button(
                     "このウェイトを現在の設定に反映",
@@ -2492,8 +2531,11 @@ try:
         )
 
         # Respect sidebar graph-size controls
-        fig_pf.update_layout(height=plotly_height_px)
-        st.plotly_chart(fig_pf, width="stretch")
+        fig_pf.update_layout(height=plotly_height_px, width=int(display_width_px))
+        try:
+            st.plotly_chart(fig_pf, use_container_width=False)
+        except TypeError:
+            st.plotly_chart(fig_pf, width="stretch")
         # Show latest % change table under the chart
         try:
             _render_change_table_under_chart(
@@ -2625,11 +2667,15 @@ if len(train_metrics_table) > 0:
                             xaxis_title="Date",
                             yaxis_title="Normalized (Start=1.0)",
                             height=plotly_height_px,
+                            width=int(display_width_px),
                         )
                         if _use_log:
                             fig.update_yaxes(type="log")
 
-                        st.plotly_chart(fig, width="stretch")
+                        try:
+                            st.plotly_chart(fig, use_container_width=False)
+                        except TypeError:
+                            st.plotly_chart(fig, width="stretch")
 
 
                         with st.expander("学習期間データ（規格化後）を表示", expanded=False):
@@ -2725,11 +2771,15 @@ try:
                 )
                 fig.update_layout(
                     height=min(900, 260 + 22 * len(_b_for_sort.index)),
+                    width=int(display_width_px),
                     margin=dict(l=10, r=10, t=30, b=10),
                     xaxis_title="Representative ETFs",
                     yaxis_title="Assets",
                 )
-                st.plotly_chart(fig, width="stretch")
+                try:
+                    st.plotly_chart(fig, use_container_width=False)
+                except TypeError:
+                    st.plotly_chart(fig, width="stretch")
             else:
                 st.dataframe(_b_for_sort.round(4), use_container_width=True)
 
@@ -2749,12 +2799,16 @@ try:
                 fig2 = go.Figure(data=go.Bar(x=_row.index.tolist(), y=_row.values.tolist()))
                 fig2.update_layout(
                     height=plotly_height_px,
+                    width=int(display_width_px),
                     margin=dict(l=10, r=10, t=30, b=10),
                     xaxis_title="ETF",
                     yaxis_title="β",
                     title=f"β breakdown: {_asset_pick}",
                 )
-                st.plotly_chart(fig2, width="stretch")
+                try:
+                    st.plotly_chart(fig2, use_container_width=False)
+                except TypeError:
+                    st.plotly_chart(fig2, width="stretch")
             else:
                 st.write(_row)
 
@@ -3015,9 +3069,9 @@ pdf_bytes = build_export_pdf_bytes(
     excess_series=excess_series,
     metrics_df=dfm,
     weights_tables=weights_tables_for_pdf,
-    fig_width=fig_width,
-    fig_height=fig_height,
-    fig_dpi=fig_dpi,
+    fig_width=pdf_fig_width,
+    fig_height=pdf_fig_height,
+    fig_dpi=pdf_fig_dpi,
 )
 
 st.download_button(

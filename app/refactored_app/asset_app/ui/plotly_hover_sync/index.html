@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { margin: 0; padding: 0; height: 100%; }
+    #wrap { width: 100%; margin: 0 auto; }
     /* Height is dynamically overridden from Python via renderFigure(heightPx). */
-    #chart { width: 100%; height: 360px; }
+    #chart { width: 100%; height: 320px; }
     /* Hide Plotly hover labels/tooltips while keeping hover/click events and spikelines.
        On mobile, Plotly can render a hover box that sometimes contains only color swatches;
        hiding the entire hoverlayer removes that box while preserving spikelines (separate layer). */
@@ -89,11 +90,14 @@
 </style>
 </head>
 <body>
-  <div id="quickbar"></div>
-  <div id="chart"></div>
-  <div id="table"></div>
+  <div id="wrap">
+    <div id="quickbar"></div>
+    <div id="chart"></div>
+    <div id="table"></div>
+  </div>
   <script src="https://cdn.plot.ly/plotly-2.4.1.min.js"></script>
   <script>
+    const wrapDiv = document.getElementById('wrap');
     const quickDiv = document.getElementById('quickbar');
     const chartDiv = document.getElementById('chart');
     const tableDiv = document.getElementById('table');
@@ -445,6 +449,43 @@
         const lastUtc = _parseYmdUtc(lastYmd);
         if (!lastUtc) return;
 
+        function _prevCloseFromDaily(ticker, ymd) {
+          try {
+            const d = datasets && datasets.daily;
+            if (!d || !d.x || !d.series) return null;
+            const xsD = d.x;
+            const arrD = d.series[ticker];
+            if (!xsD || xsD.length < 2 || !arrD || arrD.length !== xsD.length) return null;
+            for (let i = xsD.length - 1; i >= 0; i--) {
+              const di = _datePart(xsD[i]);
+              if (!di || di >= ymd) continue;
+              const v = arrD[i];
+              if (v != null && isFinite(v)) return v;
+            }
+            return null;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function _prevCloseFromDataset(ds, ticker, ymd) {
+          try {
+            if (!ds || !ds.x || !ds.series) return null;
+            const xs0 = ds.x;
+            const arr0 = ds.series[ticker];
+            if (!xs0 || xs0.length < 2 || !arr0 || arr0.length !== xs0.length) return null;
+            for (let i = xs0.length - 1; i >= 0; i--) {
+              const di = _datePart(xs0[i]);
+              if (!di || di >= ymd) continue;
+              const v = arr0[i];
+              if (v != null && isFinite(v)) return v;
+            }
+            return null;
+          } catch (e) {
+            return null;
+          }
+        }
+
         function _restyleAndRelayout(xUpd, yUpd, layoutUpd, cb) {
           try {
             const n = Math.min(
@@ -466,10 +507,14 @@
         if (lbl === '最大') {
           const xsView = xs.slice(0);
           const outSeries = {};
+          const startYmd = _datePart(xsView[0]);
           for (const t of order) {
             const arr = raw[t];
             if (!arr || arr.length !== xs.length) continue;
-            const base = arr.find((v) => v != null && isFinite(v));
+            let base = _prevCloseFromDaily(t, startYmd);
+            if (!(base != null && isFinite(base) && base > 0)) {
+              base = arr.find((v) => v != null && isFinite(v) && v > 0);
+            }
             if (!base) continue;
             outSeries[t] = arr.map((v) => (v != null && isFinite(v)) ? (v / base) : null);
           }
@@ -508,15 +553,26 @@
 
         startIdx = Math.max(0, Math.min(startIdx, xs.length - 2));
         const xsView = xs.slice(startIdx);
+        const startYmd = _datePart(xsView[0]);
         const outSeries = {};
         for (const t of order) {
           const arr = raw[t];
           if (!arr || arr.length !== xs.length) continue;
           const view = arr.slice(startIdx);
-          let base = null;
-          for (let i = 0; i < view.length; i++) {
-            const v = view[i];
-            if (v != null && isFinite(v)) { base = v; break; }
+          // Normalize to the *previous close before the window start date*.
+          // Example: "5日" -> base = close of the day before the first day in view.
+          // This keeps the overall chart style (single baseline for the whole range)
+          // while aligning "今日" with previous-close-based displays like Google Finance.
+          let base = _prevCloseFromDaily(t, startYmd);
+          if (!(base != null && isFinite(base) && base > 0)) {
+            base = _prevCloseFromDataset(ds, t, startYmd);
+          }
+          if (!(base != null && isFinite(base) && base > 0)) {
+            base = null;
+            for (let i = 0; i < view.length; i++) {
+              const v = view[i];
+              if (v != null && isFinite(v) && v > 0) { base = v; break; }
+            }
           }
           if (!base) continue;
           outSeries[t] = view.map((v) => (v != null && isFinite(v)) ? (v / base) : null);
@@ -555,7 +611,7 @@
       buildQuickBar();
     }
 
-    function renderFigure(fig, heightPx, payload) {
+    function renderFigure(fig, heightPx, payload, widthPx) {
       try {
         prepareTablePayload(payload || null);
 
@@ -607,9 +663,20 @@
         // Keep spike visible even when unified hover labels are hidden.
         fig.layout.xaxis.spikecolor = fig.layout.xaxis.spikecolor || 'rgba(0,0,0,0.35)';
 
+        if (widthPx && wrapDiv) {
+          try {
+            const w = Math.max(parseInt(widthPx, 10) || 0, 320);
+            wrapDiv.style.maxWidth = w + 'px';
+            wrapDiv.style.marginLeft = 'auto';
+            wrapDiv.style.marginRight = 'auto';
+          } catch (e) {}
+        } else if (wrapDiv) {
+          try { wrapDiv.style.maxWidth = ''; } catch (e) {}
+        }
+
         if (heightPx) {
           try {
-            const h = Math.max(parseInt(heightPx, 10) || 0, 360);
+            const h = Math.max(parseInt(heightPx, 10) || 0, 200);
             chartDiv.style.height = h + 'px';
             // Ensure Plotly respects the new height even when responsive is enabled.
             fig.layout.height = h;
