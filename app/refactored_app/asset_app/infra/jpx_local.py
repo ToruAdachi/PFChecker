@@ -146,9 +146,14 @@ def _normalize_jpx_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["name"] = df[name_col] if name_col else ""
     out["market"] = df[market_col] if market_col else ""
 
-    # normalize code to 4-digit string where possible
-    out["code"] = out["code"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-    out = out[out["code"].str.fullmatch(r"\d{4}") | out["code"].str.fullmatch(r"\d{5}")].copy()
+    # normalize code
+    # - Some sources provide numeric codes as floats (e.g. "7203.0")
+    # - New listings can include a trailing letter (e.g. "276A")
+    out["code"] = out["code"].astype(str).str.replace(r"\.0$", "", regex=True)
+    out["code"] = out["code"].map(_nfkc).str.upper()
+    # Accept 4-digit traditional codes and newer alnum codes like 276A.
+    # Keep this conservative: JPX codes start with a digit.
+    out = out[out["code"].str.fullmatch(r"\d[0-9A-Z]{2,4}")].copy()
     out["name"] = out["name"].astype(str).str.strip()
     out["market"] = out["market"].astype(str).str.strip()
     out = out[out["code"].ne("") & out["name"].ne("")].copy()
@@ -181,14 +186,17 @@ def jpx_local_search(df_jpx: pd.DataFrame, query: str, limit: int = 20) -> pd.Da
     if len(q_raw) < 1 or df_jpx is None or df_jpx.empty:
         return pd.DataFrame(columns=["code", "name", "market"])
 
-    # Accept ticker-like input e.g. 7203.T -> 7203
+    # Accept ticker-like input e.g. 7203.T / 276A.T -> 7203 / 276A
     q = _normalize_search_text(q_raw)
-    q_digits = "".join([c for c in q if c.isdigit()])
-    if q_digits and len(q_digits) >= 3 and (q.endswith(".t") or q.endswith(".jp") or q_raw.upper().endswith(".T")):
-        q = q_digits
+    q_up = q.upper()
+    if q_up.endswith((".T", ".JP")):
+        q_up = q_up.split(".", 1)[0]
+        q = q_up.lower()
 
-    if q.isdigit():
-        m = df_jpx[df_jpx["code"].astype(str).str.startswith(q)]
+    # Code prefix search (digits or new alnum codes like 276A)
+    q_code = _nfkc(q_up).strip().upper()
+    if q_code and q_code[0].isdigit() and all(ch.isdigit() or ("A" <= ch <= "Z") for ch in q_code):
+        m = df_jpx[df_jpx["code"].astype(str).str.upper().str.startswith(q_code)]
         return m.head(limit).copy()
 
     # Kana-insensitive contains match
